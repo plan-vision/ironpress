@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use super::dom::{DomNode, ElementNode, HtmlTag};
 use crate::error::IronpressError;
+use crate::util::is_html_collapsible_whitespace;
 
 /// Result of parsing HTML — nodes plus any embedded stylesheets.
 pub struct ParseResult {
@@ -45,17 +46,17 @@ fn convert_handle(handle: &Handle, stylesheets: &mut Vec<String>) -> Vec<DomNode
         }
         NodeData::Text { contents } => {
             let text = contents.borrow().to_string();
-            if text.trim().is_empty() {
-                // Preserve whitespace-only text nodes that contain at least
-                // one space (as opposed to consisting solely of newlines and
-                // tabs).  These often represent inter-element spacing, e.g.
-                // `<span>A</span> <span>B</span>`.
+
+            if text.chars().all(is_html_collapsible_whitespace) {
+                // Preserve one normal inter-element space when the source had an actual space.
+                // Drop whitespace-only text that is only tabs/newlines/form-feeds/carriage returns.
                 if text.contains(' ') {
                     vec![DomNode::Text(" ".to_string())]
                 } else {
                     vec![]
                 }
             } else {
+                // Preserve NBSP and other non-collapsible characters.
                 vec![DomNode::Text(text)]
             }
         }
@@ -182,6 +183,84 @@ mod tests {
     fn parse_empty() {
         let nodes = parse_html("").unwrap();
         assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn parse_nbsp_text_node() {
+        let nodes = parse_html("&nbsp;").unwrap();
+        assert_eq!(nodes.len(), 1);
+        match &nodes[0] {
+            DomNode::Text(text) => assert_eq!(text, "\u{00A0}"),
+            _ => panic!("Expected text node"),
+        }
+    }
+
+    #[test]
+    fn parse_paragraph_preserves_nbsp_only_child() {
+        let nodes = parse_html("<html><body><p>&nbsp;</p></body></html>").unwrap();
+        assert_eq!(nodes.len(), 1);
+        match &nodes[0] {
+            DomNode::Element(el) => {
+                assert_eq!(el.tag, HtmlTag::P);
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    DomNode::Text(text) => assert_eq!(text, "\u{00A0}"),
+                    _ => panic!("Expected text node"),
+                }
+            }
+            _ => panic!("Expected paragraph"),
+        }
+    }
+
+    #[test]
+    fn parse_paragraph_preserves_multiple_nbsp_only_child() {
+        let nodes = parse_html("<html><body><p>&nbsp;&nbsp;&nbsp;</p></body></html>").unwrap();
+        assert_eq!(nodes.len(), 1);
+        match &nodes[0] {
+            DomNode::Element(el) => {
+                assert_eq!(el.tag, HtmlTag::P);
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    DomNode::Text(text) => assert_eq!(text, "\u{00A0}\u{00A0}\u{00A0}"),
+                    _ => panic!("Expected text node"),
+                }
+            }
+            _ => panic!("Expected paragraph"),
+        }
+    }
+
+    #[test]
+    fn parse_paragraph_preserves_nbsp_between_words() {
+        let nodes = parse_html("<html><body><p>A&nbsp;B</p></body></html>").unwrap();
+        assert_eq!(nodes.len(), 1);
+        match &nodes[0] {
+            DomNode::Element(el) => {
+                assert_eq!(el.tag, HtmlTag::P);
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    DomNode::Text(text) => assert_eq!(text, "A\u{00A0}B"),
+                    _ => panic!("Expected text node"),
+                }
+            }
+            _ => panic!("Expected paragraph"),
+        }
+    }
+
+    #[test]
+    fn parse_paragraph_preserves_multiple_nbsp_between_words() {
+        let nodes = parse_html("<html><body><p>A&nbsp;&nbsp;&nbsp;B</p></body></html>").unwrap();
+        assert_eq!(nodes.len(), 1);
+        match &nodes[0] {
+            DomNode::Element(el) => {
+                assert_eq!(el.tag, HtmlTag::P);
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    DomNode::Text(text) => assert_eq!(text, "A\u{00A0}\u{00A0}\u{00A0}B"),
+                    _ => panic!("Expected text node"),
+                }
+            }
+            _ => panic!("Expected paragraph"),
+        }
     }
 
     #[test]

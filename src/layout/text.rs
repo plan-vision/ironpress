@@ -1,6 +1,9 @@
 use crate::parser::css::{AncestorInfo, CssRule, SelectorContext};
 use crate::parser::dom::{DomNode, HtmlTag};
 use crate::parser::ttf::TtfFont;
+use crate::util::{
+    contains_nbsp, is_html_collapsible_whitespace, trim_html_collapsible_whitespace_end,
+};
 // Re-export OverflowWrap so callers of TextWrapOptions::new can use it
 // without a separate import.
 pub(crate) use crate::style::computed::OverflowWrap;
@@ -52,18 +55,21 @@ pub(crate) fn resolved_line_height_factor(
 pub(crate) fn collapse_whitespace(text: &str) -> String {
     let mut result = String::new();
     let mut last_was_space = false;
+
     for c in text.chars() {
-        if c.is_whitespace() {
+        if is_html_collapsible_whitespace(c) {
             if !last_was_space && !result.is_empty() {
                 result.push(' ');
                 last_was_space = true;
             }
         } else {
+            // Preserve NBSP U+00A0 and every other non-collapsible char.
             result.push(c);
             last_was_space = false;
         }
     }
-    result.trim_end().to_string()
+
+    trim_html_collapsible_whitespace_end(&result)
 }
 
 // ---------------------------------------------------------------------------
@@ -202,9 +208,18 @@ pub(crate) fn wrap_text_runs(
             continue;
         }
         let has_newlines = run.text.contains('\n');
-        let has_preserved_spacing = run.text.chars().next().is_some_and(char::is_whitespace)
-            || run.text.chars().last().is_some_and(char::is_whitespace)
-            || run.text.contains("  ");
+        let has_preserved_spacing = run
+            .text
+            .chars()
+            .next()
+            .is_some_and(is_html_collapsible_whitespace)
+            || run
+                .text
+                .chars()
+                .last()
+                .is_some_and(is_html_collapsible_whitespace)
+            || run.text.contains("  ")
+            || contains_nbsp(&run.text);
         if has_newlines {
             for (seg_idx, segment) in run.text.split('\n').enumerate() {
                 if seg_idx > 0 {
@@ -213,9 +228,16 @@ pub(crate) fn wrap_text_runs(
                 if segment.is_empty() {
                     continue;
                 }
-                if segment.chars().next().is_some_and(char::is_whitespace)
-                    || segment.chars().last().is_some_and(char::is_whitespace)
+                if segment
+                    .chars()
+                    .next()
+                    .is_some_and(is_html_collapsible_whitespace)
+                    || segment
+                        .chars()
+                        .last()
+                        .is_some_and(is_html_collapsible_whitespace)
                     || segment.contains("  ")
+                    || contains_nbsp(segment)
                 {
                     styled_words.push((segment.to_string(), run.clone(), true));
                 } else {
@@ -913,5 +935,95 @@ impl<'a> FlexTextRunCollector<'a> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_run(text: &str) -> TextRun {
+        TextRun {
+            text: text.to_string(),
+            font_size: 12.0,
+            bold: false,
+            italic: false,
+            underline: false,
+            line_through: false,
+            overline: false,
+            color: (0.0, 0.0, 0.0),
+            link_url: None,
+            font_family: FontFamily::Helvetica,
+            background_color: None,
+            padding: (0.0, 0.0),
+            border_radius: 0.0,
+        }
+    }
+
+    #[test]
+    fn collapse_whitespace_preserves_nbsp_only_text() {
+        assert_eq!(collapse_whitespace("\u{00A0}"), "\u{00A0}");
+    }
+
+    #[test]
+    fn collapse_whitespace_preserves_multiple_nbsp_only_text() {
+        assert_eq!(
+            collapse_whitespace("\u{00A0}\u{00A0}\u{00A0}"),
+            "\u{00A0}\u{00A0}\u{00A0}"
+        );
+    }
+
+    #[test]
+    fn collapse_whitespace_preserves_nbsp_between_words() {
+        assert_eq!(collapse_whitespace("A\u{00A0}B"), "A\u{00A0}B");
+    }
+
+    #[test]
+    fn collapse_whitespace_preserves_multiple_nbsp_between_words() {
+        assert_eq!(
+            collapse_whitespace("A\u{00A0}\u{00A0}\u{00A0}B"),
+            "A\u{00A0}\u{00A0}\u{00A0}B"
+        );
+    }
+
+    #[test]
+    fn collapse_whitespace_preserves_mixed_space_and_nbsp() {
+        assert_eq!(
+            collapse_whitespace("A \u{00A0} \u{00A0} B"),
+            "A \u{00A0} \u{00A0} B"
+        );
+    }
+
+    #[test]
+    fn collapse_whitespace_does_not_trim_trailing_nbsp() {
+        assert_eq!(collapse_whitespace("A\u{00A0}"), "A\u{00A0}");
+    }
+
+    #[test]
+    fn collapse_whitespace_still_collapses_normal_html_spaces() {
+        assert_eq!(collapse_whitespace("A   B"), "A B");
+        assert_eq!(collapse_whitespace("A\n\t B"), "A B");
+        assert_eq!(collapse_whitespace("A\r\nB"), "A B");
+        assert_eq!(collapse_whitespace("A\x0CB"), "A B");
+    }
+
+    #[test]
+    fn collapse_whitespace_still_trims_trailing_normal_space() {
+        assert_eq!(collapse_whitespace("A   "), "A");
+    }
+
+    #[test]
+    fn wrap_text_runs_preserves_nbsp_as_unbreakable_text() {
+        let fonts = HashMap::new();
+        let lines = wrap_text_runs(
+            vec![test_run("A\u{00A0}B")],
+            TextWrapOptions::new(500.0, 12.0, 1.2, OverflowWrap::Normal),
+            &fonts,
+        );
+
+        assert_eq!(lines.len(), 1);
+        let text: String = lines[0].runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(text, "A\u{00A0}B");
+        assert_eq!(lines[0].runs.len(), 1);
     }
 }
