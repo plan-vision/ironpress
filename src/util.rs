@@ -1,5 +1,30 @@
 //! Shared helpers used across the parser, layout, and renderer.
 
+/// Return true for the five HTML collapsible whitespace characters.
+pub(crate) fn is_html_collapsible_whitespace(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0C')
+}
+
+/// Trim only HTML collapsible whitespace from the end of a string.
+pub(crate) fn trim_html_collapsible_whitespace_end(s: &str) -> String {
+    let mut end = s.len();
+
+    for (idx, c) in s.char_indices().rev() {
+        if is_html_collapsible_whitespace(c) {
+            end = idx;
+        } else {
+            break;
+        }
+    }
+
+    s[..end].to_string()
+}
+
+/// Return true when a string contains a Unicode non-breaking space.
+pub(crate) fn contains_nbsp(s: &str) -> bool {
+    s.contains('\u{00A0}')
+}
+
 /// Decode a standard Base64 string without pulling in an extra dependency.
 pub(crate) fn decode_base64(input: &str) -> Option<Vec<u8>> {
     fn table(c: u8) -> Option<u8> {
