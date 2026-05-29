@@ -1,4 +1,4 @@
-use crate::parser::dom::{ElementNode, HtmlTag};
+use crate::parser::dom::{DomNode, ElementNode, HtmlTag};
 use crate::parser::ttf::TtfFont;
 use crate::style::computed::{
     BackgroundOrigin, BackgroundPosition, BackgroundRepeat, BackgroundSize, BoxSizing,
@@ -211,12 +211,31 @@ pub(crate) fn collapse_margins_through_parent(
 // Group 6 — Element classification
 // ---------------------------------------------------------------------------
 
+pub(crate) fn is_atomic_layout_child(tag: HtmlTag) -> bool {
+    matches!(tag, HtmlTag::Img | HtmlTag::Svg)
+}
+
 pub(crate) fn recurses_as_layout_child(tag: HtmlTag) -> bool {
-    tag.is_block() || tag == HtmlTag::Svg
+    tag.is_block() || is_atomic_layout_child(tag)
 }
 
 pub(crate) fn collects_as_inline_text(tag: HtmlTag) -> bool {
-    tag != HtmlTag::Svg && tag.is_inline()
+    tag.is_inline() && !is_atomic_layout_child(tag)
+}
+
+pub(crate) fn subtree_contains_atomic_layout_child(el: &ElementNode) -> bool {
+    let mut stack = vec![el];
+    while let Some(current) = stack.pop() {
+        if is_atomic_layout_child(current.tag) {
+            return true;
+        }
+        for child in &current.children {
+            if let DomNode::Element(child_el) = child {
+                stack.push(child_el);
+            }
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------

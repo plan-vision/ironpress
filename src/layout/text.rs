@@ -694,6 +694,11 @@ fn collect_text_runs_inner(
                 }
             }
             DomNode::Element(el) => {
+                if super::engine::is_atomic_layout_child(el.tag) {
+                    // Replaced elements are layout children, not text runs. Block layout
+                    // must route atomic-containing subtrees through flatten_element first.
+                    continue;
+                }
                 if super::engine::collects_as_inline_text(el.tag) || el.tag == HtmlTag::Br {
                     if el.tag == HtmlTag::Br {
                         runs.push(TextRun {

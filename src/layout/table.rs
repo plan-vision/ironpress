@@ -11,6 +11,7 @@ use super::context::{LayoutContext, LayoutEnv, ParentBox, Viewport};
 use super::engine::{
     CounterState, LayoutBorder, LayoutElement, TextLine, TextRun, collects_as_inline_text,
     flatten_element, has_background_paint, recurses_as_layout_child,
+    subtree_contains_atomic_layout_child,
 };
 use super::paginate::{estimate_element_height, table_row_content_width};
 use super::text::{
@@ -46,6 +47,60 @@ pub(crate) fn table_cell_content_height(cell: &TableCell) -> f32 {
     let text_h: f32 = cell.lines.iter().map(|l| l.height).sum();
     let nested_h: f32 = cell.nested_rows.iter().map(estimate_element_height).sum();
     cell.padding_top + text_h + nested_h + cell.padding_bottom
+}
+
+fn table_nested_content_width(element: &LayoutElement, fonts: &HashMap<String, TtfFont>) -> f32 {
+    match element {
+        LayoutElement::Image { width, .. } | LayoutElement::Svg { width, .. } => *width,
+        LayoutElement::TextBlock {
+            lines,
+            block_width,
+            padding_left,
+            padding_right,
+            border,
+            ..
+        } => block_width.unwrap_or_else(|| {
+            let text_width = lines
+                .iter()
+                .map(|line| {
+                    line.runs
+                        .iter()
+                        .map(|run| {
+                            estimate_word_width(
+                                &run.text,
+                                run.font_size,
+                                &run.font_family,
+                                run.bold,
+                                run.italic,
+                                fonts,
+                            )
+                        })
+                        .sum::<f32>()
+                })
+                .fold(0.0f32, f32::max);
+            text_width + padding_left + padding_right + border.horizontal_width()
+        }),
+        LayoutElement::Container {
+            children,
+            block_width,
+            padding_left,
+            padding_right,
+            border,
+            ..
+        } => block_width.unwrap_or_else(|| {
+            children
+                .iter()
+                .map(|child| table_nested_content_width(child, fonts))
+                .fold(0.0f32, f32::max)
+                + padding_left
+                + padding_right
+                + border.horizontal_width()
+        }),
+        LayoutElement::TableRow { .. } | LayoutElement::GridRow { .. } => {
+            table_row_content_width(element)
+        }
+        _ => 0.0,
+    }
 }
 
 /// Parse a width for a `<col>` / `<colgroup>` element.
@@ -704,9 +759,12 @@ pub(crate) fn flatten_table(
                         );
                         let mut runs = Vec::new();
                         let mut nested_rows = Vec::new();
-                        let recurse_descendants = cell_el.children.iter().any(
-                            |node| matches!(node, DomNode::Element(e) if recurses_as_layout_child(e.tag)),
-                        );
+                        let recurse_descendants = cell_el.children.iter().any(|node| {
+                            matches!(node, DomNode::Element(e)
+                                if recurses_as_layout_child(e.tag)
+                                    || (collects_as_inline_text(e.tag)
+                                        && subtree_contains_atomic_layout_child(e)))
+                        });
                         let mut text_ancestors = cell_sizing_ctx.ancestors.clone();
                         text_ancestors.push(AncestorInfo {
                             element: cell_el,
@@ -765,7 +823,7 @@ pub(crate) fn flatten_table(
                             .sum();
                         let nested_width = nested_rows
                             .iter()
-                            .map(table_row_content_width)
+                            .map(|row| table_nested_content_width(row, fonts))
                             .fold(0.0f32, f32::max);
                         let total_preferred = content_width.max(nested_width)
                             + cell_style.padding.left
@@ -966,10 +1024,12 @@ pub(crate) fn flatten_table(
 
             let mut runs = Vec::new();
             let mut nested_rows = Vec::new();
-            let recurse_descendants = cell_el
-                .children
-                .iter()
-                .any(|node| matches!(node, DomNode::Element(e) if recurses_as_layout_child(e.tag)));
+            let recurse_descendants = cell_el.children.iter().any(|node| {
+                matches!(node, DomNode::Element(e)
+                        if recurses_as_layout_child(e.tag)
+                            || (collects_as_inline_text(e.tag)
+                                && subtree_contains_atomic_layout_child(e)))
+            });
             let mut text_ancestors = cell_selector_ctx.ancestors.clone();
             text_ancestors.push(AncestorInfo {
                 element: cell_el,
@@ -1303,7 +1363,9 @@ fn collect_table_cell_content_inner(
                         element_sibling_count,
                         &mut inner_env,
                     );
-                } else if el.tag == HtmlTag::Svg
+                } else if recurses_as_layout_child(el.tag)
+                    || (collects_as_inline_text(el.tag) && subtree_contains_atomic_layout_child(el))
+                    || el.tag == HtmlTag::Svg
                     || (recurse_blocks
                         && style.display != Display::Inline
                         && el.tag != HtmlTag::Br

@@ -8531,6 +8531,28 @@ mod tests {
     }
 
     #[test]
+    fn table_cell_image_pdf_renders_xobject() {
+        let png_bytes = build_minimal_test_png();
+        let b64 = simple_base64_encode_test(&png_bytes);
+        let html = format!(
+            r#"<table><tr><td><img width="100" height="100" src="data:image/png;base64,{b64}"></td></tr></table>"#
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        let pdf = render_pdf(&pages, PageSize::A4, Margin::default()).unwrap();
+        let pdf_str = String::from_utf8_lossy(&pdf);
+
+        assert!(
+            pdf_str.contains("/XObject"),
+            "Expected nested table-cell image to emit an image XObject"
+        );
+        assert!(
+            pdf_str.contains(" Do\n"),
+            "Expected nested table-cell image to be painted"
+        );
+    }
+
+    #[test]
     fn nested_text_block_padding_top_offsets_text() {
         let lines = vec![test_text_line(vec![test_text_run("Nested")])];
         let custom_fonts = HashMap::new();
