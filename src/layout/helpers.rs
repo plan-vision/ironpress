@@ -211,12 +211,16 @@ pub(crate) fn collapse_margins_through_parent(
 // Group 6 — Element classification
 // ---------------------------------------------------------------------------
 
+pub(crate) fn is_atomic_layout_child(tag: HtmlTag) -> bool {
+    matches!(tag, HtmlTag::Img | HtmlTag::Svg)
+}
+
 pub(crate) fn recurses_as_layout_child(tag: HtmlTag) -> bool {
-    tag.is_block() || tag == HtmlTag::Svg
+    tag.is_block() || is_atomic_layout_child(tag)
 }
 
 pub(crate) fn collects_as_inline_text(tag: HtmlTag) -> bool {
-    tag != HtmlTag::Svg && tag.is_inline()
+    tag.is_inline() && !is_atomic_layout_child(tag)
 }
 
 // ---------------------------------------------------------------------------

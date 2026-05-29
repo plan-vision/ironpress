@@ -349,8 +349,7 @@ pub(crate) fn layout_block_element(
         && early_has_visual
         && el.children.iter().any(|c| {
             matches!(c, DomNode::Element(e)
-                if (e.tag.is_block() || e.tag == HtmlTag::Svg)
-                    && !collects_as_inline_text(e.tag))
+                if recurses_as_layout_child(e.tag))
         });
 
     if has_math_children {
@@ -482,7 +481,7 @@ pub(crate) fn layout_block_element(
             && el.children.iter().any(|c| {
                 matches!(c, DomNode::Element(e)
                     if (has_own_margins(e.tag)
-                        || (e.tag.is_block() && !collects_as_inline_text(e.tag))
+                        || recurses_as_layout_child(e.tag)
                         || element_has_css_display_block(e, style, env.rules, child_ancestors))
                         && !element_is_inline_block(
                             e, style, env.rules, child_ancestors, 0, 0, &[]))
@@ -651,15 +650,22 @@ pub(crate) fn layout_block_element(
                         );
                     }
                     DomNode::Element(child_el)
-                        if (child_el.tag.is_block()
-                            || child_el.tag == HtmlTag::Svg
+                        if (recurses_as_layout_child(child_el.tag)
                             || element_has_css_display_block(
                                 child_el,
                                 style,
                                 env.rules,
                                 child_ancestors,
                             ))
-                            && !collects_as_inline_text(child_el.tag) =>
+                            && !element_is_inline_block(
+                                child_el,
+                                style,
+                                env.rules,
+                                child_ancestors,
+                                0,
+                                0,
+                                &[],
+                            ) =>
                     {
                         // Flush inline runs before block child
                         flush_runs(
