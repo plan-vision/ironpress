@@ -671,6 +671,86 @@ pub(super) fn render_nested_layout_elements(
                     ctx,
                 );
             }
+            LayoutElement::Image {
+                image,
+                width,
+                height,
+                ..
+            } => {
+                let img_x = planned_element.origin_x;
+                let img_y = planned_element.top_y - height;
+                let img_obj_id = ctx.pdf_writer.add_image_object(
+                    &image.data,
+                    image.source_width,
+                    image.source_height,
+                    image.format,
+                    image.png_metadata.as_ref(),
+                );
+                let img_name = format!("Im{img_obj_id}");
+                content.push_str(&format!(
+                    "q\n{w} 0 0 {h} {x} {y} cm\n/{name} Do\nQ\n",
+                    w = width,
+                    h = height,
+                    x = img_x,
+                    y = img_y,
+                    name = img_name,
+                ));
+                ctx.page_images.push(ImageRef {
+                    name: img_name,
+                    obj_id: img_obj_id,
+                });
+            }
+            LayoutElement::Svg {
+                tree,
+                width,
+                height,
+                ..
+            } => {
+                let svg_x = planned_element.origin_x;
+                let svg_y = planned_element.top_y - height;
+
+                content.push_str("q\n");
+                content.push_str(&format!("1 0 0 -1 {} {} cm\n", svg_x, svg_y + height));
+                if let Some(placement) = crate::render::svg_geometry::compute_svg_placement(
+                    tree,
+                    crate::render::svg_geometry::SvgPlacementRequest::from_rect(
+                        0.0,
+                        0.0,
+                        *width,
+                        *height,
+                        tree.preserve_aspect_ratio,
+                    ),
+                ) {
+                    content.push_str("q\n");
+                    content.push_str(&placement.viewport.clip_path());
+                    content.push_str(&format!(
+                        "{sx} 0 0 {sy} {tx} {ty} cm\n",
+                        sx = placement.scale_x,
+                        sy = placement.scale_y,
+                        tx = placement.translate_x,
+                        ty = placement.translate_y,
+                    ));
+                    {
+                        let mut image_sink = SvgPageImageSink {
+                            pdf_writer: ctx.pdf_writer,
+                            page_images: ctx.page_images,
+                        };
+                        let mut resources = crate::render::svg_to_pdf::SvgPdfResources {
+                            shadings: ctx.shadings,
+                            shading_counter: ctx.shading_counter,
+                            ext_gstates: Some(ctx.page_ext_gstates),
+                            image_sink: Some(&mut image_sink),
+                        };
+                        crate::render::svg_to_pdf::render_svg_tree_with_resources(
+                            tree,
+                            content,
+                            &mut resources,
+                        );
+                    }
+                    content.push_str("Q\n");
+                }
+                content.push_str("Q\n");
+            }
             _ => {}
         }
     }
@@ -773,6 +853,32 @@ pub(super) fn plan_nested_layout_elements(
                         )
                         - *margin_bottom;
                 }
+            }
+            LayoutElement::Image {
+                margin_top,
+                margin_bottom,
+                height,
+                flow_extra_bottom,
+                ..
+            }
+            | LayoutElement::Svg {
+                margin_top,
+                margin_bottom,
+                height,
+                flow_extra_bottom,
+                ..
+            } => {
+                cursor_y -= *margin_top;
+                let top_y = cursor_y;
+                planned.push(PlannedNestedElement {
+                    element,
+                    source_index: element_idx,
+                    origin_x: frame.origin_x,
+                    top_y,
+                    available_width: frame.available_width,
+                    blur_canvas_box: None,
+                });
+                cursor_y -= *height + *flow_extra_bottom + *margin_bottom;
             }
             _ => {}
         }

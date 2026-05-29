@@ -162,9 +162,13 @@ pub(crate) fn load_image_from_element(
     // Fall back to raster image using the same bytes.
     let image = load_raster_image_bytes(raw, style.blur_radius)?;
 
-    // Determine dimensions from attributes
-    let attr_width = parse_html_image_dimension(el.attributes.get("width"));
-    let attr_height = parse_html_image_dimension(el.attributes.get("height"));
+    // Determine dimensions from CSS first, then HTML attributes.
+    let attr_width = style
+        .width
+        .or_else(|| parse_html_image_dimension(el.attributes.get("width")));
+    let attr_height = style
+        .height
+        .or_else(|| parse_html_image_dimension(el.attributes.get("height")));
 
     let (width, height) = match (attr_width, attr_height) {
         (Some(w), Some(h)) => (w, h),

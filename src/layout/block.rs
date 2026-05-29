@@ -15,6 +15,7 @@ use super::helpers::{
     collects_as_inline_text, has_background_paint, heading_level,
     patch_absolute_children_containing_block, pseudo_is_block_like, push_block_pseudo,
     recurses_as_layout_child, resolve_abs_containing_block, resolve_padding_box_height,
+    subtree_contains_atomic_layout_child,
 };
 use super::inline::{
     element_has_css_display_block, element_is_inline_block, layout_inline_block_group,
@@ -349,7 +350,8 @@ pub(crate) fn layout_block_element(
         && early_has_visual
         && el.children.iter().any(|c| {
             matches!(c, DomNode::Element(e)
-                if recurses_as_layout_child(e.tag))
+                if recurses_as_layout_child(e.tag)
+                    || (collects_as_inline_text(e.tag) && subtree_contains_atomic_layout_child(e)))
         });
 
     if has_math_children {
@@ -383,6 +385,43 @@ pub(crate) fn layout_block_element(
                         margin_top: 0.0,
                         margin_bottom: 0.0,
                     });
+                }
+                DomNode::Element(child_el)
+                    if recurses_as_layout_child(child_el.tag)
+                        || (collects_as_inline_text(child_el.tag)
+                            && subtree_contains_atomic_layout_child(child_el)) =>
+                {
+                    flush_runs(
+                        &mut runs,
+                        inner_width,
+                        style,
+                        available_width,
+                        block_w,
+                        effective_height,
+                        auto_offset_left,
+                        el,
+                        output,
+                        env.fonts,
+                    );
+                    let n_children = el
+                        .children
+                        .iter()
+                        .filter(|c| matches!(c, DomNode::Element(_)))
+                        .count();
+                    flatten_element(
+                        child_el,
+                        style,
+                        &ctx.with_parent(inner_width, Some(available_height), style.font_size)
+                            .with_containing_block(None),
+                        output,
+                        None,
+                        child_ancestors,
+                        positioned_depth,
+                        0,
+                        n_children,
+                        &[],
+                        env,
+                    );
                 }
                 _ => {
                     // Collect text from this child
@@ -482,6 +521,7 @@ pub(crate) fn layout_block_element(
                 matches!(c, DomNode::Element(e)
                     if (has_own_margins(e.tag)
                         || recurses_as_layout_child(e.tag)
+                        || (collects_as_inline_text(e.tag) && subtree_contains_atomic_layout_child(e))
                         || element_has_css_display_block(e, style, env.rules, child_ancestors))
                         && !element_is_inline_block(
                             e, style, env.rules, child_ancestors, 0, 0, &[]))
@@ -651,6 +691,8 @@ pub(crate) fn layout_block_element(
                     }
                     DomNode::Element(child_el)
                         if (recurses_as_layout_child(child_el.tag)
+                            || (collects_as_inline_text(child_el.tag)
+                                && subtree_contains_atomic_layout_child(child_el))
                             || element_has_css_display_block(
                                 child_el,
                                 style,
@@ -887,6 +929,8 @@ pub(crate) fn layout_block_element(
                     }
                     DomNode::Element(child_el)
                         if collects_as_inline_text(child_el.tag)
+                            && !(collects_as_inline_text(child_el.tag)
+                                && subtree_contains_atomic_layout_child(child_el))
                             && !element_has_css_display_block(
                                 child_el,
                                 style,
@@ -1181,7 +1225,9 @@ pub(crate) fn layout_block_element(
         let mut ib_group_wrapper: Vec<&ElementNode> = Vec::new();
         for child in &el.children {
             if let DomNode::Element(child_el) = child {
-                if recurses_as_layout_child(child_el.tag)
+                if (recurses_as_layout_child(child_el.tag)
+                    || (collects_as_inline_text(child_el.tag)
+                        && subtree_contains_atomic_layout_child(child_el)))
                     && element_is_inline_block(
                         child_el,
                         style,
@@ -1208,7 +1254,10 @@ pub(crate) fn layout_block_element(
                             env.fonts,
                         );
                     }
-                    if recurses_as_layout_child(child_el.tag) {
+                    if recurses_as_layout_child(child_el.tag)
+                        || (collects_as_inline_text(child_el.tag)
+                            && subtree_contains_atomic_layout_child(child_el))
+                    {
                         let child_cb = if effective_height.is_some() {
                             Some(ContainingBlock {
                                 x: 0.0,
@@ -1444,7 +1493,9 @@ pub(crate) fn layout_block_element(
         let mut ib_group: Vec<&ElementNode> = Vec::new();
         for child in &el.children {
             if let DomNode::Element(child_el) = child {
-                if recurses_as_layout_child(child_el.tag)
+                if (recurses_as_layout_child(child_el.tag)
+                    || (collects_as_inline_text(child_el.tag)
+                        && subtree_contains_atomic_layout_child(child_el)))
                     && element_is_inline_block(
                         child_el,
                         style,
@@ -1471,7 +1522,10 @@ pub(crate) fn layout_block_element(
                             env.fonts,
                         );
                     }
-                    if recurses_as_layout_child(child_el.tag) {
+                    if recurses_as_layout_child(child_el.tag)
+                        || (collects_as_inline_text(child_el.tag)
+                            && subtree_contains_atomic_layout_child(child_el))
+                    {
                         flatten_element(
                             child_el,
                             style,

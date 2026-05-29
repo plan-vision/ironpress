@@ -1836,7 +1836,10 @@ pub(crate) fn flatten_element(
                         &[],
                         env,
                     );
-                } else if recurses_as_layout_child(child_el.tag) {
+                } else if recurses_as_layout_child(child_el.tag)
+                    || (collects_as_inline_text(child_el.tag)
+                        && subtree_contains_atomic_layout_child(child_el))
+                {
                     let child_ctx = layout_ctx
                         .with_parent(available_width, Some(available_height), style.font_size)
                         .with_containing_block(None);
@@ -1953,7 +1956,10 @@ fn inline_loose_list_p(
                 return (Some(raw_idx), p_style.margin.top, p_style.margin.bottom);
             }
             child_el_ordinal += 1;
-            if recurses_as_layout_child(child_el.tag) {
+            if recurses_as_layout_child(child_el.tag)
+                || (collects_as_inline_text(child_el.tag)
+                    && subtree_contains_atomic_layout_child(child_el))
+            {
                 break;
             }
         }
@@ -2775,6 +2781,34 @@ mod tests {
             .any(|(_, el)| layout_element_has_image(el))
     }
 
+    fn layout_element_first_image_size(el: &LayoutElement) -> Option<(f32, f32)> {
+        match el {
+            LayoutElement::Image { width, height, .. } => Some((*width, *height)),
+            LayoutElement::Container { children, .. } => {
+                children.iter().find_map(layout_element_first_image_size)
+            }
+            LayoutElement::FlexRow { cells, .. } => cells.iter().find_map(|cell| {
+                cell.nested_elements
+                    .iter()
+                    .find_map(layout_element_first_image_size)
+            }),
+            LayoutElement::TableRow { cells, .. } | LayoutElement::GridRow { cells, .. } => {
+                cells.iter().find_map(|cell| {
+                    cell.nested_rows
+                        .iter()
+                        .find_map(layout_element_first_image_size)
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn page_first_image_size(page: &Page) -> Option<(f32, f32)> {
+        page.elements
+            .iter()
+            .find_map(|(_, el)| layout_element_first_image_size(el))
+    }
+
     fn page_text(page: &Page) -> String {
         fn collect_text(el: &LayoutElement, out: &mut String) {
             match el {
@@ -2843,6 +2877,115 @@ mod tests {
     }
 
     #[test]
+    fn table_cell_image() {
+        let png_bytes = build_test_png_bytes();
+        let b64 = base64_encode(&png_bytes);
+        let html = format!(
+            r#"<html><body><table><tbody><tr><td><img width="100" height="100" src="data:image/png;base64,{b64}"></td></tr></tbody></table></body></html>"#,
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty(), "expected non-empty layout");
+        assert!(
+            page_has_image(&pages[0]),
+            "expected img inside td to produce an Image layout element"
+        );
+    }
+
+    #[test]
+    fn table_cell_styled_image() {
+        let png_bytes = build_test_png_bytes();
+        let b64 = base64_encode(&png_bytes);
+        let html = format!(
+            r#"<html><body><table><tr><td><img style="width:100px;height:100px" src="data:image/png;base64,{b64}"></td></tr></table></body></html>"#,
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+
+        assert!(
+            page_has_image(&pages[0]),
+            "expected styled img inside td to produce an Image layout element"
+        );
+        assert_eq!(
+            page_first_image_size(&pages[0]),
+            Some((75.0, 75.0)),
+            "expected 100px styled image to resolve to 75pt by CSS px conversion"
+        );
+    }
+
+    #[test]
+    fn table_cell_span_wrapped_image() {
+        let png_bytes = build_test_png_bytes();
+        let b64 = base64_encode(&png_bytes);
+        let html = format!(
+            r#"<html><body><table><tr><td><span style="font-size:9pt"><img width="100" height="100" src="data:image/png;base64,{b64}"></span></td></tr></table></body></html>"#,
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+
+        assert!(
+            page_has_image(&pages[0]),
+            "expected span-wrapped img inside td to produce an Image layout element"
+        );
+    }
+
+    #[test]
+    fn table_cell_text_image_text() {
+        let png_bytes = build_test_png_bytes();
+        let b64 = base64_encode(&png_bytes);
+        let html = format!(
+            r#"<html><body><table><tr><td>Before <img width="100" height="100" src="data:image/png;base64,{b64}"> After</td></tr></table></body></html>"#,
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        let text = page_text(&pages[0]);
+
+        assert!(text.contains("Before"), "expected leading text to remain");
+        assert!(text.contains("After"), "expected trailing text to remain");
+        assert!(
+            page_has_image(&pages[0]),
+            "expected img between table-cell text to produce an Image layout element"
+        );
+    }
+
+    #[test]
+    fn layout_img_inside_span_inside_div_is_not_collected_as_text() {
+        let png_bytes = build_test_png_bytes();
+        let b64 = base64_encode(&png_bytes);
+        let html = format!(
+            r#"<html><body><div><span style="font-size:9pt"><img style="width:100px;height:100px" src="data:image/png;base64,{b64}"></span></div></body></html>"#,
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].elements.is_empty(), "expected non-empty layout");
+        assert!(
+            page_has_image(&pages[0]),
+            "expected span-wrapped img inside div to produce an Image layout element"
+        );
+    }
+
+    #[test]
+    fn layout_img_inside_nested_inline_wrappers_inside_div_renders() {
+        let png_bytes = build_test_png_bytes();
+        let b64 = base64_encode(&png_bytes);
+        let html = format!(
+            r#"<html><body><div><b><i><span><img width="100" height="100" src="data:image/png;base64,{b64}"></span></i></b></div></body></html>"#,
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+
+        assert_eq!(pages.len(), 1);
+        assert!(
+            page_has_image(&pages[0]),
+            "expected deeply inline-wrapped img inside div to produce an Image layout element"
+        );
+    }
+
+    #[test]
     fn layout_img_between_text_in_div_is_not_swallowed() {
         let png_bytes = build_test_png_bytes();
         let b64 = base64_encode(&png_bytes);
@@ -2858,6 +3001,42 @@ mod tests {
         assert!(
             page_has_image(&pages[0]),
             "expected img between text to produce an Image layout element"
+        );
+    }
+
+    #[test]
+    fn layout_img_inside_span_between_text_in_div_is_not_swallowed() {
+        let png_bytes = build_test_png_bytes();
+        let b64 = base64_encode(&png_bytes);
+        let html = format!(
+            r#"<html><body><div>Before <span><img width="100" height="100" src="data:image/png;base64,{b64}"></span> After</div></body></html>"#,
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        let text = page_text(&pages[0]);
+
+        assert!(text.contains("Before"), "expected leading text to remain");
+        assert!(text.contains("After"), "expected trailing text to remain");
+        assert!(
+            page_has_image(&pages[0]),
+            "expected span-wrapped img between text to produce an Image layout element"
+        );
+    }
+
+    #[test]
+    fn layout_top_level_span_wrapped_img_still_renders() {
+        let png_bytes = build_test_png_bytes();
+        let b64 = base64_encode(&png_bytes);
+        let html = format!(
+            r#"<html><body><span><img width="100" height="100" src="data:image/png;base64,{b64}"></span></body></html>"#,
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+
+        assert_eq!(pages.len(), 1);
+        assert!(
+            page_has_image(&pages[0]),
+            "expected top-level span-wrapped img to continue producing an Image layout element"
         );
     }
 
