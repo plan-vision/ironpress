@@ -80,7 +80,11 @@ pub(crate) fn load_image_bytes(raw: Vec<u8>) -> Option<RasterImageAsset> {
             bit_depth: png_info.bit_depth,
         };
         Some(RasterImageAsset {
-            data: png_info.idat_data,
+            // Keep complete PNG bytes for rendering. PDF XObjects cannot embed
+            // alpha interleaved in the main color stream, so the renderer needs
+            // the full PNG container to decode pixels and split any alpha into
+            // an /SMask.
+            data: raw,
             source_width: png_info.width,
             source_height: png_info.height,
             format: ImageFormat::Png,
