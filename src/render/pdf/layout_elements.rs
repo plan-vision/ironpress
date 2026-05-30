@@ -679,26 +679,31 @@ pub(super) fn render_nested_layout_elements(
             } => {
                 let img_x = planned_element.origin_x;
                 let img_y = planned_element.top_y - height;
-                let img_obj_id = ctx.pdf_writer.add_image_object(
-                    &image.data,
-                    image.source_width,
-                    image.source_height,
-                    image.format,
-                    image.png_metadata.as_ref(),
-                );
-                let img_name = format!("Im{img_obj_id}");
-                content.push_str(&format!(
-                    "q\n{w} 0 0 {h} {x} {y} cm\n/{name} Do\nQ\n",
-                    w = width,
-                    h = height,
-                    x = img_x,
-                    y = img_y,
-                    name = img_name,
-                ));
-                ctx.page_images.push(ImageRef {
-                    name: img_name,
-                    obj_id: img_obj_id,
-                });
+                let img_obj_id = match image.format {
+                    ImageFormat::Jpeg => Some(ctx.pdf_writer.add_image_object(
+                        &image.data,
+                        image.source_width,
+                        image.source_height,
+                        image.format,
+                        image.png_metadata.as_ref(),
+                    )),
+                    ImageFormat::Png => ctx.pdf_writer.add_raw_png_image_object(&image.data),
+                };
+                if let Some(img_obj_id) = img_obj_id {
+                    let img_name = format!("Im{img_obj_id}");
+                    content.push_str(&format!(
+                        "q\n{w} 0 0 {h} {x} {y} cm\n/{name} Do\nQ\n",
+                        w = width,
+                        h = height,
+                        x = img_x,
+                        y = img_y,
+                        name = img_name,
+                    ));
+                    ctx.page_images.push(ImageRef {
+                        name: img_name,
+                        obj_id: img_obj_id,
+                    });
+                }
             }
             LayoutElement::Svg {
                 tree,

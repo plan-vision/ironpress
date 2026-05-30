@@ -2759,6 +2759,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn png_asset_keeps_full_png_bytes() {
+        let png_bytes = build_test_png_bytes();
+        let b64 = base64_encode(&png_bytes);
+        let html = format!(r#"<img src="data:image/png;base64,{b64}" width="20" height="20">"#);
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+
+        match &pages[0].elements[0].1 {
+            LayoutElement::Image { image, .. } => {
+                assert_eq!(image.format, ImageFormat::Png);
+                assert!(image.data.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+            }
+            _ => panic!("Expected Image layout element"),
+        }
+    }
+
     fn layout_element_has_image(el: &LayoutElement) -> bool {
         match el {
             LayoutElement::Image { .. } => true,

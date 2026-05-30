@@ -2506,13 +2506,22 @@ pub(crate) fn render_pdf_to_writer_full<W: std::io::Write>(
                     let img_x = margin.left;
                     // PDF y-axis is bottom-up; y_pos is top of margin, image draws from bottom-left
                     let img_y = page_size.height - margin.top - y_pos - height;
-                    let img_obj_id = pdf_writer.add_image_object(
-                        &image.data,
-                        image.source_width,
-                        image.source_height,
-                        image.format,
-                        image.png_metadata.as_ref(),
-                    );
+                    let img_obj_id = match image.format {
+                        ImageFormat::Jpeg => pdf_writer.add_image_object(
+                            &image.data,
+                            image.source_width,
+                            image.source_height,
+                            image.format,
+                            image.png_metadata.as_ref(),
+                        ),
+                        ImageFormat::Png => {
+                            let Some(img_obj_id) = pdf_writer.add_raw_png_image_object(&image.data)
+                            else {
+                                continue;
+                            };
+                            img_obj_id
+                        }
+                    };
                     let img_name = format!("Im{img_obj_id}");
                     content.push_str(&format!(
                         "q\n{w} 0 0 {h} {x} {y} cm\n/{name} Do\nQ\n",
@@ -5083,6 +5092,7 @@ struct DecodedPngImage {
 fn decode_png_for_pdf(raw: &[u8]) -> Option<DecodedPngImage> {
     let mut decoder = png_decoder::Decoder::new(std::io::Cursor::new(raw));
     decoder.ignore_checksums(true);
+    decoder.set_transformations(png_decoder::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().ok()?;
     let output_size = reader.output_buffer_size()?;
     let mut buffer = vec![0; output_size];
@@ -5201,6 +5211,9 @@ impl PdfWriter {
                 )
             }
             ImageFormat::Png => {
+                // This path expects already predictor-compatible color data without alpha.
+                // Do not use for normal PNG files with alpha. Normal PNG files should go
+                // through add_raw_png_image_object(), which decodes and separates /SMask.
                 let meta = png_metadata.expect("PNG metadata required for PNG images");
                 let color_space = match meta.channels {
                     1 | 2 => "/DeviceGray",
@@ -7158,6 +7171,57 @@ mod tests {
     }
 
     #[test]
+    fn png_rgba_alpha_uses_smask() {
+        let png_bytes = encode_test_png_rgba();
+        let b64 = simple_base64_encode_test(&png_bytes);
+        let html = format!(
+            r#"<html><body><img width="20" height="20" src="data:image/png;base64,{b64}"></body></html>"#
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        let pdf = render_pdf(&pages, PageSize::A4, Margin::default()).unwrap();
+        let content = String::from_utf8_lossy(&pdf);
+
+        assert!(content.contains("/SMask"));
+        assert!(content.contains("/ColorSpace /DeviceRGB"));
+        assert!(!content.contains("/Colors 4"));
+    }
+
+    #[test]
+    fn png_grayscale_alpha_uses_smask() {
+        let png_bytes = encode_test_png_grayscale_alpha();
+        let b64 = simple_base64_encode_test(&png_bytes);
+        let html = format!(
+            r#"<html><body><img width="20" height="20" src="data:image/png;base64,{b64}"></body></html>"#
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        let pdf = render_pdf(&pages, PageSize::A4, Margin::default()).unwrap();
+        let content = String::from_utf8_lossy(&pdf);
+
+        assert!(content.contains("/SMask"));
+        assert!(content.contains("/ColorSpace /DeviceGray"));
+        assert!(!content.contains("/Colors 2"));
+    }
+
+    #[test]
+    fn png_rgb_without_alpha_still_works() {
+        let png_bytes = encode_test_png_rgb();
+        let b64 = simple_base64_encode_test(&png_bytes);
+        let html = format!(
+            r#"<html><body><img width="20" height="20" src="data:image/png;base64,{b64}"></body></html>"#
+        );
+        let nodes = parse_html(&html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        let pdf = render_pdf(&pages, PageSize::A4, Margin::default()).unwrap();
+        let content = String::from_utf8_lossy(&pdf);
+
+        assert!(!content.contains("/SMask"));
+        assert!(content.contains("/ColorSpace /DeviceRGB"));
+        assert!(content.contains("/Subtype /Image"));
+    }
+
+    #[test]
     fn render_png_image_contains_flatedecode() {
         // Build a minimal valid PNG as base64 data URI
         let png_bytes = build_minimal_test_png();
@@ -7180,12 +7244,12 @@ mod tests {
             "PNG image should use FlateDecode filter"
         );
         assert!(
-            content.contains("/Predictor 15"),
-            "PNG image should have Predictor 15 in DecodeParms"
+            content.contains("/ColorSpace /DeviceRGB"),
+            "RGB PNG should use a DeviceRGB image XObject"
         );
         assert!(
-            content.contains("/Colors 3"),
-            "RGB PNG should have Colors 3"
+            !content.contains("/DecodeParms"),
+            "normal PNG rendering should decode pixels instead of embedding predictor streams"
         );
         assert!(
             content.contains("Do"),
@@ -7204,7 +7268,7 @@ mod tests {
         let content = String::from_utf8_lossy(&pdf);
         assert!(content.contains("/Filter /FlateDecode"));
         assert!(content.contains("/ColorSpace /DeviceGray"));
-        assert!(content.contains("/Colors 1"));
+        assert!(!content.contains("/DecodeParms"));
     }
 
     /// Build a minimal valid PNG (1x1 RGB, 8-bit).
@@ -7213,34 +7277,55 @@ mod tests {
     }
 
     fn build_test_png_with_color_type(color_type: u8) -> Vec<u8> {
-        let mut png = Vec::new();
-        // PNG signature
-        png.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
-        // IHDR chunk (13 bytes data)
-        let mut ihdr = Vec::new();
-        ihdr.extend_from_slice(&1u32.to_be_bytes()); // width
-        ihdr.extend_from_slice(&1u32.to_be_bytes()); // height
-        ihdr.push(8); // bit depth
-        ihdr.push(color_type);
-        ihdr.push(0); // compression
-        ihdr.push(0); // filter
-        ihdr.push(0); // interlace
-        append_png_chunk(&mut png, b"IHDR", &ihdr);
-        // IDAT chunk with dummy zlib-compressed data
-        let idat = [
-            0x78, 0x01, 0x62, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01,
-        ];
-        append_png_chunk(&mut png, b"IDAT", &idat);
-        // IEND
-        append_png_chunk(&mut png, b"IEND", &[]);
-        png
+        match color_type {
+            0 => encode_test_png_grayscale(),
+            2 => encode_test_png_rgb(),
+            4 => encode_test_png_grayscale_alpha(),
+            6 => encode_test_png_rgba(),
+            _ => panic!("unsupported test PNG color type {color_type}"),
+        }
     }
 
-    fn append_png_chunk(buf: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
-        buf.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        buf.extend_from_slice(chunk_type);
-        buf.extend_from_slice(data);
-        buf.extend_from_slice(&[0, 0, 0, 0]); // CRC placeholder
+    fn encode_test_png_rgb() -> Vec<u8> {
+        let image =
+            image::RgbImage::from_raw(2, 2, vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0])
+                .unwrap();
+        encode_dynamic_png(image::DynamicImage::ImageRgb8(image))
+    }
+
+    fn encode_test_png_rgba() -> Vec<u8> {
+        let image = image::RgbaImage::from_raw(
+            2,
+            2,
+            vec![
+                255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 64, 255, 255, 0, 0,
+            ],
+        )
+        .unwrap();
+        encode_dynamic_png(image::DynamicImage::ImageRgba8(image))
+    }
+
+    fn encode_test_png_grayscale() -> Vec<u8> {
+        let image = image::GrayImage::from_raw(2, 2, vec![0, 85, 170, 255]).unwrap();
+        encode_dynamic_png(image::DynamicImage::ImageLuma8(image))
+    }
+
+    fn encode_test_png_grayscale_alpha() -> Vec<u8> {
+        let image = image::ImageBuffer::<image::LumaA<u8>, Vec<u8>>::from_raw(
+            2,
+            2,
+            vec![0, 255, 85, 128, 170, 64, 255, 0],
+        )
+        .unwrap();
+        encode_dynamic_png(image::DynamicImage::ImageLumaA8(image))
+    }
+
+    fn encode_dynamic_png(image: image::DynamicImage) -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut cursor, image::ImageFormat::Png)
+            .unwrap();
+        cursor.into_inner()
     }
 
     fn simple_base64_encode_test(data: &[u8]) -> String {
