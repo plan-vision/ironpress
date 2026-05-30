@@ -223,6 +223,9 @@ impl HtmlTag {
                 | Self::Audio
                 | Self::Progress
                 | Self::Meter
+                // Unknown/custom HTML elements default to inline in browsers;
+                // keep their inline text content participating in layout.
+                | Self::Unknown
         )
     }
 }
