@@ -2109,6 +2109,163 @@ mod tests {
         assert!(pages[0].elements.len() >= 3);
     }
 
+    fn first_table_y(html: &str) -> f32 {
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        pages[0]
+            .elements
+            .iter()
+            .find_map(|(y, el)| matches!(el, LayoutElement::TableRow { .. }).then_some(*y))
+            .expect("expected a table row")
+    }
+
+    fn text_block_y(html: &str, needle: &str) -> f32 {
+        let nodes = parse_html(html).unwrap();
+        let pages = layout(&nodes, PageSize::A4, Margin::default());
+        pages[0]
+            .elements
+            .iter()
+            .find_map(|(y, el)| match el {
+                LayoutElement::TextBlock { lines, .. } => {
+                    let text: String = lines
+                        .iter()
+                        .flat_map(|line| line.runs.iter())
+                        .map(|run| run.text.as_str())
+                        .collect();
+                    text.contains(needle).then_some(*y)
+                }
+                _ => None,
+            })
+            .expect("expected text block containing needle")
+    }
+
+    #[test]
+    fn nbsp_paragraph_before_table_preserves_vertical_space() {
+        let baseline = first_table_y(
+            r#"<html><body>
+                <p>Before</p>
+                <table><tr><td><p>After</p></td></tr></table>
+            </body></html>"#,
+        );
+        let with_nbsp = first_table_y(
+            r#"<html><body>
+                <p>Before</p>
+                <p>&nbsp;</p>
+                <table><tr><td><p>After</p></td></tr></table>
+            </body></html>"#,
+        );
+
+        assert!(
+            with_nbsp > baseline,
+            "NBSP paragraph should move table down"
+        );
+        assert!(
+            with_nbsp - baseline >= 14.4,
+            "NBSP paragraph should contribute at least one normal line height before the table"
+        );
+    }
+
+    #[test]
+    fn span_nbsp_paragraph_before_table_preserves_vertical_space() {
+        let baseline = first_table_y(
+            r#"<html><body>
+                <p>Before</p>
+                <table><tr><td><p>After</p></td></tr></table>
+            </body></html>"#,
+        );
+        let with_nbsp = first_table_y(
+            r#"<html><body>
+                <p>Before</p>
+                <p><span style="font-size:9pt">&nbsp;</span></p>
+                <table><tr><td><p>After</p></td></tr></table>
+            </body></html>"#,
+        );
+
+        assert!(
+            with_nbsp > baseline,
+            "span-wrapped NBSP should move table down"
+        );
+        assert!(
+            with_nbsp - baseline >= 10.8,
+            "span-wrapped NBSP paragraph should contribute at least its line height before the table"
+        );
+    }
+
+    #[test]
+    fn unknown_inline_nbsp_paragraph_before_table_preserves_vertical_space() {
+        let baseline = first_table_y(
+            r#"<html><body>
+                <p>Before</p>
+                <table><tr><td><p>After</p></td></tr></table>
+            </body></html>"#,
+        );
+        let with_nbsp = first_table_y(
+            r#"<html><body>
+                <p>Before</p>
+                <p><span style="font-size:9pt"><o:p>&nbsp;</o:p></span></p>
+                <table><tr><td><p>After</p></td></tr></table>
+            </body></html>"#,
+        );
+
+        assert!(
+            with_nbsp > baseline,
+            "unknown inline wrapper around NBSP should move table down"
+        );
+        assert!(
+            with_nbsp - baseline >= 10.8,
+            "unknown inline NBSP paragraph should contribute at least its line height before the table"
+        );
+    }
+
+    #[test]
+    fn nbsp_only_paragraph_has_line_height() {
+        let baseline = text_block_y(
+            r#"<html><body>
+                <p>Before</p>
+                <p>After</p>
+            </body></html>"#,
+            "After",
+        );
+        let with_nbsp = text_block_y(
+            r#"<html><body>
+                <p>Before</p>
+                <p>&nbsp;</p>
+                <p>After</p>
+            </body></html>"#,
+            "After",
+        );
+
+        assert!(
+            with_nbsp > baseline,
+            "NBSP paragraph should move following paragraph down"
+        );
+        assert!(
+            with_nbsp - baseline >= 14.4,
+            "NBSP paragraph should contribute at least one normal line height before the following paragraph"
+        );
+    }
+
+    #[test]
+    fn ascii_space_only_paragraph_behavior_unchanged() {
+        let baseline = text_block_y(
+            r#"<html><body>
+                <p>Before</p>
+                <p>After</p>
+            </body></html>"#,
+            "After",
+        );
+        let with_spaces = text_block_y(
+            r#"<html><body>
+                <p>Before</p>
+                <p>     </p>
+                <p>After</p>
+            </body></html>"#,
+            "After",
+        );
+
+        assert_eq!(with_spaces, baseline);
+    }
+
     #[test]
     fn layout_empty() {
         let nodes = parse_html("").unwrap();
